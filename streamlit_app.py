@@ -3,227 +3,369 @@ import pandas as pd
 import plotly.express as px
 import io
 
-def app():
-    st.set_page_config(layout="wide")
-    st.title("Excel Data Extractor and Visualizer")
+# Set page configuration for a wider layout
+st.set_page_config(layout="wide", page_title="Capital Project Portfolio Dashboard")
 
-    st.write(
-        """
-        Upload your Excel file to extract specific data points and visualize the 2025
-        monthly data as time series graphs, along with other relevant charts.
-        """
-    )
+# --- Data Loading and Cleaning ---
+@st.cache_data
+def load_data(uploaded_file):
+    """Loads and preprocesses the CSV data."""
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as e:
+        st.error(f"Error loading file: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
 
-    uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx"])
+    # 1. Clean Column Names
+    # A function to clean individual column names
+    def clean_col_name(col_name):
+        col_name = str(col_name).strip().replace(' ', '_').replace('+', '_').replace('.', '').replace('-', '_').replace('__', '_')
+        col_name = col_name.upper()
+        # Specific corrections for common typos/inconsistencies observed
+        if 'PROJEC_TID' in col_name:
+            col_name = col_name.replace('PROJEC_TID', 'PROJECT_ID')
+        if 'INI_MATIVE_PROGRAM' in col_name:
+            col_name = col_name.replace('INI_MATIVE_PROGRAM', 'INITIATIVE_PROGRAM')
+        if 'ALL_PRIOR_YEARS_A' in col_name:
+            col_name = col_name.replace('ALL_PRIOR_YEARS_A', 'ALL_PRIOR_YEARS_ACTUALS')
+        if 'C_URRENT_EAC' in col_name: # Fix for 'C URRENT_EAC'
+            col_name = 'CURRENT_EAC'
+        if 'QE_RUN_RATE' in col_name: # Fix for 'QE Run Rate'
+            col_name = 'QE_RUN_RATE'
+        return col_name
 
-    if uploaded_file is not None:
-        try:
-            # Read the Excel file into a Pandas DataFrame
-            # Use io.BytesIO to handle the uploaded file
-            # The key change is how we read the Excel file to allow for duplicate headers initially
-            # We'll then clean them up *after* loading.
-            df = pd.read_excel(io.BytesIO(uploaded_file.getvalue()), header=None) # Read without a header first
+    df.columns = [clean_col_name(col) for col in df.columns]
 
-            # Now, find the actual header row. Assuming the first row with non-empty values
-            # and typical column names is the header. This might require some tuning.
-            # A more robust approach might be to ask the user for the header row number.
-            # For now, let's try to infer it.
+    # Handle duplicate column names by making them unique if they exist (e.g., Rate, Rate.1)
+    cols = pd.Series(df.columns)
+    for dup in cols[cols.duplicated()].unique():
+        cols[cols[cols == dup].index.values.tolist()] = [dup + '_' + str(i) if i != 0 else dup for i, i_val in enumerate(cols[cols == dup].index.values)]
+    df.columns = cols
 
-            # Find the first row that looks like a header (e.g., has string values)
-            header_row_index = -1
-            for i in range(df.shape[0]):
-                if any(isinstance(x, str) and len(str(x).strip()) > 0 for x in df.iloc[i]):
-                    header_row_index = i
-                    break
+    # Identify financial columns that need numeric conversion
+    financial_cols = [
+        'ALL_PRIOR_YEARS_ACTUALS', 'BUSINESS_ALLOCATION', 'CURRENT_EAC',
+        'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA',
+        'YE_RUN', 'RATE', 'QE_RUN', 'RATE_1', 'QE_RUN_RATE_0', # Use RATE_1 or similar if it becomes unique after cleaning
+        '2025_01_A', '2025_02_A', '2025_03_A', '2025_04_A', '2025_05_A', '2025_06_A', '2025_07_A',
+        '2025_08_A', '2025_09_A', '2025_10_A', '2025_11_A', '2025_12_A',
+        '2025_01_F', '2025_02_F', '2025_03_F', '2025_04_F', '2025_05_F', '2025_06_F', '2025_07_F',
+        '2025_08_F', '2025_09_F', '2025_10_F', '2025_11_F', '2025_12_F',
+        '2025_01_CP', '2025_02_CP', '2025_03_CP', '2025_04_CP', '2025_05_CP', '2025_06_CP', '2025_07_CP',
+        '2025_08_CP', '2025_09_CP', '2025_10_CP', '2025_11_CP', '2025_12_CP',
+        # Check for cleaned duplicate versions of monthly columns
+        '2025_01__A_1', '2025_02__A_1', '2025_03__A_1', '2025_04__A_1', '2025_05__A_1', '2025_06__A_1', '2025_07__A_1',
+        '2025_08__A_1', '2025_09_A_1', '2025_10__A_1', '2025_11__A_1', '2025_12__A_1',
+        '2025_01_F_1', '2025_02_F_1', '2025_03_F_1', '2025_04_F_1', '2025_05_F_1', '2025_06_F_1', '2025_07_F_1',
+        '2025_08_F_1', '2025_09_F_1', '2025_10_F_1', '2025_11_F_1', '2025_12_F_1',
+        '2025_01_CP_1', '2025_02_CP_1', '2025_03_CP_1', '2025_04_CP_1', '2025_05_CP_1', '2025_06_CP_1', '2025_07_CP_1',
+        '2025_08_CP_1', '2025_09_CP_1', '2025_10_CP_1', '2025_11_CP_1', '2025_12_CP_1'
+    ]
 
-            if header_row_index == -1:
-                st.error("Could not find a header row in your Excel file. Please ensure your data starts with a header.")
-                return
+    # Filter financial columns to only those actually present in the DataFrame
+    financial_cols_present = [col for col in financial_cols if col in df.columns]
 
-            # Set the found row as the header
-            df.columns = df.iloc[header_row_index]
-            df = df[header_row_index+1:].reset_index(drop=True) # Data starts from the next row
-
-            # Handle duplicate column names by making them unique BEFORE normalization
-            cols = pd.Series(df.columns)
-            for dup in cols[cols.duplicated()].unique():
-                cols[cols[cols == dup].index.values.tolist()] = [dup + '.' + str(i) if i != 0 else dup for i, iel in enumerate(cols[cols == dup].index.values.tolist())]
-            df.columns = cols
-
-            st.success("File successfully uploaded and columns processed!")
+    # Convert financial columns to numeric, handling commas and potential errors
+    for col in financial_cols_present:
+        # Check if the column is of object type (string) before cleaning
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str).str.replace(',', '').str.replace(' ', '').replace('', '0').astype(float)
+        else: # If already numeric, ensure it's float to avoid errors with mixed types later
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
 
-            # Clean up column names in DataFrame by stripping whitespace and replacing problematic characters
-            # Apply normalization AFTER making duplicates unique
-            df.columns = df.columns.str.strip().str.replace(' ', '_').str.replace('+', '_').str.upper()
+    # Identify monthly columns for 2025 after cleaning
+    monthly_actuals_cols = [col for col in df.columns if col.startswith('2025_') and col.endswith('_A')]
+    monthly_forecasts_cols = [col for col in df.columns if col.startswith('2025_') and col.endswith('_F')]
+    monthly_plan_cols = [col for col in df.columns if col.startswith('2025_') and col.endswith('_CP')]
 
-            selected_columns = [
-                'PORTFOLIO_OBS_LEVEL1',
-                'SUB_PORTFOLIO_OBS_LEVEL',
-                'MASTER_PROJECT_ID',
-                'MASTER_PRJ_PROJ_NAME',
-                'PROJECT_NAME',
-                'PROJECT_MANAGER',
-                'BRS_CLASSIFICATION',
-                'INITIATIVE_PROGRAM',
-                'ALL_PRIOR_YEARS_A',
-                'BUSINESS_ALLOCATION',
-                'CURRENT_EAC',
-                'YE_RUN',
-                'RATE', # This will likely be 'RATE.1', 'RATE.2' etc. in your DataFrame
-                'QE_RUN',
-                'QE_FORECAST_VS_QE_PLAN', # This will likely be 'QE_FORECAST_VS_QE_PLAN.1' etc.
-                'FORECAST_VS_BA',
+    # Ensure all columns are numeric
+    for col_list in [monthly_actuals_cols, monthly_forecasts_cols, monthly_plan_cols]:
+        for col in col_list:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # Calculate total 2025 Actuals, Forecasts, and Plans
+    df['TOTAL_2025_ACTUALS'] = df[monthly_actuals_cols].sum(axis=1) if monthly_actuals_cols else 0
+    df['TOTAL_2025_FORECASTS'] = df[monthly_forecasts_cols].sum(axis=1) if monthly_forecasts_cols else 0
+    df['TOTAL_2025_CAPITAL_PLAN'] = df[monthly_plan_cols].sum(axis=1) if monthly_plan_cols else 0
+
+    # Calculate Total Actuals to Date (Prior Years + 2025 Actuals)
+    df['TOTAL_ACTUALS_TO_DATE'] = df['ALL_PRIOR_YEARS_ACTUALS'] + df['TOTAL_2025_ACTUALS']
+
+    return df
+
+# --- Streamlit App Layout ---
+st.title("💰 Capital Project Portfolio Dashboard")
+st.markdown("""
+    This dashboard provides an interactive overview of your capital projects, allowing you to track financials,
+    monitor trends, and identify variances.
+""")
+
+uploaded_file = st.file_uploader("Upload your Capital Project CSV file", type=["csv"])
+
+if uploaded_file is not None:
+    df = load_data(uploaded_file)
+
+    if not df.empty:
+        # --- Sidebar Filters ---
+        st.sidebar.header("Filter Projects")
+        all_portfolio_levels = ['All'] + df['PORTFOLIO_OBS_LEVEL'].dropna().unique().tolist()
+        selected_portfolio = st.sidebar.selectbox("Select Portfolio Level", all_portfolio_levels)
+
+        all_sub_portfolio_levels = ['All'] + df['SUB_PORTFOLIO_OBS_LEVEL'].dropna().unique().tolist()
+        selected_sub_portfolio = st.sidebar.selectbox("Select Sub-Portfolio Level", all_sub_portfolio_levels)
+
+        all_managers = ['All'] + df['PROJECT_MANAGER'].dropna().unique().tolist()
+        selected_manager = st.sidebar.selectbox("Select Project Manager", all_managers)
+
+        all_brs_classifications = ['All'] + df['BRS_CLASSIFICATION'].dropna().unique().tolist()
+        selected_brs_classification = st.sidebar.selectbox("Select BRS Classification", all_brs_classifications)
+
+        # Apply filters
+        filtered_df = df.copy()
+        if selected_portfolio != 'All':
+            filtered_df = filtered_df[filtered_df['PORTFOLIO_OBS_LEVEL'] == selected_portfolio]
+        if selected_sub_portfolio != 'All':
+            filtered_df = filtered_df[filtered_df['SUB_PORTFOLIO_OBS_LEVEL'] == selected_sub_portfolio]
+        if selected_manager != 'All':
+            filtered_df = filtered_df[filtered_df['PROJECT_MANAGER'] == selected_manager]
+        if selected_brs_classification != 'All':
+            filtered_df = filtered_df[filtered_df['BRS_CLASSIFICATION'] == selected_brs_classification]
+
+        st.subheader("Key Metrics Overview")
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            total_business_allocation = filtered_df['BUSINESS_ALLOCATION'].sum()
+            st.metric(label="Total Business Allocation", value=f"${total_business_allocation:,.2f}")
+        with col2:
+            total_current_eac = filtered_df['CURRENT_EAC'].sum()
+            st.metric(label="Total Current EAC", value=f"${total_current_eac:,.2f}")
+        with col3:
+            total_actuals_to_date = filtered_df['TOTAL_ACTUALS_TO_DATE'].sum()
+            st.metric(label="Total Actuals To Date", value=f"${total_actuals_to_date:,.2f}")
+        with col4:
+            total_projects = len(filtered_df)
+            st.metric(label="Number of Projects", value=total_projects)
+
+        st.markdown("---")
+
+        # --- Project Table ---
+        st.subheader("Project Details")
+        st.dataframe(
+            filtered_df[[
+                'PORTFOLIO_OBS_LEVEL', 'SUB_PORTFOLIO_OBS_LEVEL', 'MASTER_PROJECT_ID',
+                'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION',
+                'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
+                'TOTAL_2025_ACTUALS', 'TOTAL_2025_FORECASTS', 'TOTAL_2025_CAPITAL_PLAN',
+                'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA'
+            ]].style.format({
+                'BUSINESS_ALLOCATION': "${:,.2f}",
+                'CURRENT_EAC': "${:,.2f}",
+                'ALL_PRIOR_YEARS_ACTUALS': "${:,.2f}",
+                'TOTAL_2025_ACTUALS': "${:,.2f}",
+                'TOTAL_2025_FORECASTS': "${:,.2f}",
+                'TOTAL_2025_CAPITAL_PLAN': "${:,.2f}",
+                'QE_FORECAST_VS_QE_PLAN': "{:,.2f}",
+                'FORECAST_VS_BA': "{:,.2f}"
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.markdown("---")
+
+        # --- Monthly Spend Trends ---
+        st.subheader("2025 Monthly Spend Trends")
+
+        # Identify monthly columns for plotting, making sure they exist
+        monthly_actuals_cols_present = [col for col in df.columns if col.startswith('2025_') and col.endswith('_A')]
+        monthly_forecasts_cols_present = [col for col in df.columns if col.startswith('2025_') and col.endswith('_F')]
+        monthly_plan_cols_present = [col for col in df.columns if col.startswith('2025_') and col.endswith('_CP')]
+
+        # Create a melted DataFrame for time series plotting
+        if monthly_actuals_cols_present or monthly_forecasts_cols_present or monthly_plan_cols_present:
+            monthly_data_actuals = filtered_df[monthly_actuals_cols_present].sum().reset_index()
+            monthly_data_actuals.columns = ['Month', 'Amount']
+            monthly_data_actuals['Type'] = 'Actuals'
+
+            monthly_data_forecasts = filtered_df[monthly_forecasts_cols_present].sum().reset_index()
+            monthly_data_forecasts.columns = ['Month', 'Amount']
+            monthly_data_forecasts['Type'] = 'Forecasts'
+
+            monthly_data_plan = filtered_df[monthly_plan_cols_present].sum().reset_index()
+            monthly_data_plan.columns = ['Month', 'Amount']
+            monthly_data_plan['Type'] = 'Capital Plan'
+
+            # Combine all monthly data
+            monthly_combined_df = pd.concat([monthly_data_actuals, monthly_data_forecasts, monthly_data_plan])
+
+            # Order months correctly for plotting
+            month_order = [
+                '2025_01', '2025_02', '2025_03', '2025_04', '2025_05', '2025_06',
+                '2025_07', '2025_08', '2025_09', '2025_10', '2025_11', '2025_12'
             ]
+            monthly_combined_df['Month_Sort'] = monthly_combined_df['Month'].str.replace('_A', '').str.replace('_F', '').str.replace('_CP', '')
+            monthly_combined_df['Month_Sort'] = pd.Categorical(monthly_combined_df['Month_Sort'], categories=month_order, ordered=True)
+            monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
 
-            # Generate 2025 monthly columns dynamically
-            month_suffixes = ['A', 'F', 'CP', 'AB']
-            for month in range(1, 13):
-                month_str = f"2025_{month:02d}"
-                for suffix in month_suffixes:
-                    selected_columns.append(f"{month_str}_{suffix}")
-                    # Also add potential Pandas auto-generated duplicates
-                    for i in range(1, 5): # Check for up to 4 duplicates (e.g., .1, .2, .3, .4)
-                        selected_columns.append(f"{month_str}_{suffix}.{i}")
+            fig_monthly_trends = px.line(
+                monthly_combined_df,
+                x='Month_Sort',
+                y='Amount',
+                color='Type',
+                title='Monthly Capital Trends (Actuals, Forecasts, Plan)',
+                labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'},
+                line_shape='linear',
+                markers=True
+            )
+            fig_monthly_trends.update_layout(hovermode="x unified", legend_title_text='Type')
+            fig_monthly_trends.update_xaxes(title_text="Month (2025)")
+            fig_monthly_trends.update_yaxes(title_text="Amount ($)")
+            st.plotly_chart(fig_monthly_trends, use_container_width=True)
+        else:
+            st.warning("No 2025 monthly actuals, forecasts, or plan data found for trend analysis.")
 
+        st.markdown("---")
 
-            # Filter selected_columns to only include those present in the DataFrame
-            existing_selected_columns = [col for col in selected_columns if col in df.columns]
-            missing_columns = [col for col in selected_columns if col not in df.columns]
+        # --- Variance Analysis ---
+        st.subheader("Variance Analysis")
+        col_var1, col_var2 = st.columns(2)
 
-            if missing_columns:
-                st.warning(
-                    f"The following *original* column names were not found in your Excel file with the exact names or their auto-generated unique forms: {', '.join(set([c.split('.')[0] for c in missing_columns if not c.startswith('2025_')]))}. "
-                    "Please ensure the column headers in your file match the expected names or adjust the script."
+        if 'QE_FORECAST_VS_QE_PLAN' in filtered_df.columns:
+            with col_var1:
+                fig_qe_variance = px.bar(
+                    filtered_df,
+                    x='PROJECT_NAME',
+                    y='QE_FORECAST_VS_QE_PLAN',
+                    title='QE Forecast vs QE Plan Variance',
+                    labels={'QE_FORECAST_VS_QE_PLAN': 'Variance'},
+                    height=400
                 )
-                st.info("Note: Columns that were duplicated in your Excel file might have `.1`, `.2`, etc. appended by Pandas. This script will try to account for them.")
+                fig_qe_variance.update_layout(xaxis_title="Project Name", yaxis_title="Variance")
+                st.plotly_chart(fig_qe_variance, use_container_width=True)
+        else:
+            with col_var1:
+                st.info("Column 'QE_FORECAST_VS_QE_PLAN' not found for variance analysis.")
 
+        if 'FORECAST_VS_BA' in filtered_df.columns:
+            with col_var2:
+                fig_ba_variance = px.bar(
+                    filtered_df,
+                    x='PROJECT_NAME',
+                    y='FORECAST_VS_BA',
+                    title='Forecast vs Business Allocation Variance',
+                    labels={'FORECAST_VS_BA': 'Variance'},
+                    height=400
+                )
+                fig_ba_variance.update_layout(xaxis_title="Project Name", yaxis_title="Variance")
+                st.plotly_chart(fig_ba_variance, use_container_width=True)
+        else:
+            with col_var2:
+                st.info("Column 'FORECAST_VS_BA' not found for variance analysis.")
 
-            if not existing_selected_columns:
-                st.error("No matching columns found in the uploaded file based on the required headers. Please check your Excel file's headers.")
-                return
+        st.markdown("---")
 
-            # Extract the desired data
-            extracted_df = df[existing_selected_columns].copy()
+        # --- Allocation Breakdown ---
+        st.subheader("Capital Allocation Breakdown")
+        col_alloc1, col_alloc2, col_alloc3 = st.columns(3)
 
-            st.header("Extracted Data (First 5 Rows)")
-            st.dataframe(extracted_df.head())
-
-            # --- Time Series Graphs for 2025 Data ---
-            st.header("2025 Monthly Data Time Series")
-
-            # Filter time_series_cols specifically from the EXISTING_SELECTED_COLUMNS
-            time_series_cols_present = [col for col in existing_selected_columns if col.startswith('2025_')]
-
-            if time_series_cols_present:
-                melted_df_list = []
-                for col in time_series_cols_present:
-                    parts = col.split('_')
-                    if len(parts) >= 3:
-                        month_part = parts[1]
-                        type_part = parts[2].split('.')[0] # Remove .1, .2 etc. from type
-                        if month_part.isdigit():
-                            month = int(month_part)
-                            temp_df = extracted_df[[col]].copy()
-                            temp_df.columns = ['Value']
-                            temp_df['Month'] = month
-                            temp_df['Type'] = type_part
-                            melted_df_list.append(temp_df)
-
-                if melted_df_list:
-                    melted_df = pd.concat(melted_df_list)
-                    melted_df['Value'] = pd.to_numeric(melted_df['Value'], errors='coerce')
-                    melted_df.dropna(subset=['Value'], inplace=True)
-
-                    if not melted_df.empty:
-                        agg_melted_df = melted_df.groupby(['Month', 'Type']).agg(
-                            Mean_Value=('Value', 'mean'),
-                            Sum_Value=('Value', 'sum')
-                        ).reset_index()
-
-                        st.subheader("Monthly Mean Values (by Type)")
-                        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-                        fig_mean = px.line(agg_melted_df, x='Month', y='Mean_Value', color='Type',
-                                         title='Average Monthly Values by Type (2025)',
-                                         labels={'Mean_Value': 'Average Value', 'Month': 'Month (2025)'})
-                        fig_mean.update_xaxes(tickmode='array', tickvals=list(range(1, 13)), ticktext=month_names)
-                        st.plotly_chart(fig_mean, use_container_width=True)
-
-                        st.subheader("Monthly Sum Values (by Type)")
-                        fig_sum = px.line(agg_melted_df, x='Month', y='Sum_Value', color='Type',
-                                        title='Sum of Monthly Values by Type (2025)',
-                                        labels={'Sum_Value': 'Sum of Values', 'Month': 'Month (2025)'})
-                        fig_sum.update_xaxes(tickmode='array', tickvals=list(range(1, 13)), ticktext=month_names)
-                        st.plotly_chart(fig_sum, use_container_width=True)
-                    else:
-                        st.info("No numerical 2025 monthly data available after cleaning for plotting time series.")
+        if 'BUSINESS_ALLOCATION' in filtered_df.columns:
+            with col_alloc1:
+                if not filtered_df['PORTFOLIO_OBS_LEVEL'].isnull().all():
+                    fig_portfolio_alloc = px.pie(
+                        filtered_df,
+                        names='PORTFOLIO_OBS_LEVEL',
+                        values='BUSINESS_ALLOCATION',
+                        title='Allocation by Portfolio Level',
+                        hole=0.3
+                    )
+                    st.plotly_chart(fig_portfolio_alloc, use_container_width=True)
                 else:
-                    st.info("No 2025 monthly data found in the selected columns for plotting.")
-            else:
-                st.info("No 2025 monthly columns found for time series analysis in the extracted data.")
+                    st.info("No 'PORTFOLIO_OBS_LEVEL' data available for allocation.")
 
-
-            # --- Other Graphs ---
-            st.header("Other Data Visualizations")
-
-            # Example 1: Bar chart for 'PROJECT_MANAGER'
-            if 'PROJECT_MANAGER' in extracted_df.columns:
-                st.subheader("Projects per Project Manager")
-                pm_counts = extracted_df['PROJECT_MANAGER'].value_counts().reset_index()
-                pm_counts.columns = ['PROJECT_MANAGER', 'Count']
-                fig_pm = px.bar(pm_counts, x='PROJECT_MANAGER', y='Count',
-                                title='Number of Projects per Project Manager')
-                st.plotly_chart(fig_pm, use_container_width=True)
-            else:
-                st.info("Column 'PROJECT_MANAGER' not found for visualization.")
-
-            # Example 2: Bar chart for 'BUSINESS_ALLOCATION'
-            if 'BUSINESS_ALLOCATION' in extracted_df.columns:
-                st.subheader("Business Allocation Distribution")
-                biz_alloc_counts = extracted_df['BUSINESS_ALLOCATION'].value_counts().reset_index()
-                biz_alloc_counts.columns = ['BUSINESS_ALLOCATION', 'Count']
-                fig_biz = px.bar(biz_alloc_counts, x='BUSINESS_ALLOCATION', y='Count',
-                                 title='Distribution of Business Allocation')
-                st.plotly_chart(fig_biz, use_container_width=True)
-            else:
-                st.info("Column 'BUSINESS_ALLOCATION' not found for visualization.")
-
-            # Example 3: Histogram for 'CURRENT_EAC' (assuming numerical)
-            if 'CURRENT_EAC' in extracted_df.columns:
-                st.subheader("Distribution of Current EAC")
-                numeric_eac = pd.to_numeric(extracted_df['CURRENT_EAC'], errors='coerce').dropna()
-                if not numeric_eac.empty:
-                    fig_eac = px.histogram(numeric_eac, x='CURRENT_EAC',
-                                           title='Distribution of Current EAC Values')
-                    st.plotly_chart(fig_eac, use_container_width=True)
+            with col_alloc2:
+                if not filtered_df['SUB_PORTFOLIO_OBS_LEVEL'].isnull().all():
+                    fig_sub_portfolio_alloc = px.pie(
+                        filtered_df,
+                        names='SUB_PORTFOLIO_OBS_LEVEL',
+                        values='BUSINESS_ALLOCATION',
+                        title='Allocation by Sub-Portfolio Level',
+                        hole=0.3
+                    )
+                    st.plotly_chart(fig_sub_portfolio_alloc, use_container_width=True)
                 else:
-                    st.info("Column 'CURRENT_EAC' found but contains no numerical data for histogram.")
-            else:
-                st.info("Column 'CURRENT_EAC' not found for visualization.")
+                    st.info("No 'SUB_PORTFOLIO_OBS_LEVEL' data available for allocation.")
 
-
-            # Example 4: Scatter plot for ALL_PRIOR_YEARS_A vs CURRENT_EAC
-            relevant_cols = ['ALL_PRIOR_YEARS_A', 'CURRENT_EAC']
-            if all(col in extracted_df.columns for col in relevant_cols):
-                st.subheader("ALL_PRIOR_YEARS_A vs CURRENT_EAC")
-                scatter_df = extracted_df[relevant_cols].copy()
-                scatter_df['ALL_PRIOR_YEARS_A'] = pd.to_numeric(scatter_df['ALL_PRIOR_YEARS_A'], errors='coerce')
-                scatter_df['CURRENT_EAC'] = pd.to_numeric(scatter_df['CURRENT_EAC'], errors='coerce')
-                scatter_df.dropna(inplace=True)
-
-                if not scatter_df.empty:
-                    fig_scatter = px.scatter(scatter_df, x='ALL_PRIOR_YEARS_A', y='CURRENT_EAC',
-                                             title='Prior Years Actuals vs Current EAC')
-                    st.plotly_chart(fig_scatter, use_container_width=True)
+            with col_alloc3:
+                if not filtered_df['BRS_CLASSIFICATION'].isnull().all():
+                    fig_brs_alloc = px.pie(
+                        filtered_df,
+                        names='BRS_CLASSIFICATION',
+                        values='BUSINESS_ALLOCATION',
+                        title='Allocation by BRS Classification',
+                        hole=0.3
+                    )
+                    st.plotly_chart(fig_brs_alloc, use_container_width=True)
                 else:
-                    st.info("No numerical data available for 'ALL_PRIOR_YEARS_A' and 'CURRENT_EAC' for scatter plot.")
-            else:
-                st.info("Columns 'ALL_PRIOR_YEARS_A' or 'CURRENT_EAC' not found for scatter plot.")
+                    st.info("No 'BRS_CLASSIFICATION' data available for allocation.")
+        else:
+            st.info("Column 'BUSINESS_ALLOCATION' not found for allocation breakdown.")
 
+        st.markdown("---")
 
-        except Exception as e:
-            st.error(f"An error occurred: {e}. Please ensure the file is a valid Excel file and its contents are as expected.")
+        # --- Detailed Project Financials (on selection) ---
+        st.subheader("Detailed Project Financials")
+        project_names = ['Select a Project'] + filtered_df['PROJECT_NAME'].dropna().unique().tolist()
+        selected_project_name = st.selectbox("Select a project for detailed view:", project_names)
 
-if __name__ == "__main__":
-    app()
+        if selected_project_name != 'Select a Project':
+            project_details = filtered_df[filtered_df['PROJECT_NAME'] == selected_project_name].iloc[0]
+
+            st.write(f"### Details for: {project_details['PROJECT_NAME']}")
+
+            # Display key financial metrics for the selected project
+            col_d1, col_d2, col_d3 = st.columns(3)
+            with col_d1:
+                st.metric(label="Business Allocation", value=f"${project_details.get('BUSINESS_ALLOCATION', 0):,.2f}")
+            with col_d2:
+                st.metric(label="Current EAC", value=f"${project_details.get('CURRENT_EAC', 0):,.2f}")
+            with col_d3:
+                st.metric(label="All Prior Years Actuals", value=f"${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}")
+
+            st.write("#### 2025 Monthly Breakdown:")
+            monthly_breakdown_df = pd.DataFrame({
+                'Month': [f"2025_{i:02d}" for i in range(1, 13)],
+                'Actuals': [project_details.get(f'2025_{i:02d}_A', 0) for i in range(1, 13)],
+                'Forecasts': [project_details.get(f'2025_{i:02d}_F', 0) for i in range(1, 13)],
+                'Capital Plan': [project_details.get(f'2025_{i:02d}_CP', 0) for i in range(1, 13)]
+            })
+
+            # Format the monthly breakdown table
+            st.dataframe(monthly_breakdown_df.style.format({
+                'Actuals': "${:,.2f}",
+                'Forecasts': "${:,.2f}",
+                'Capital Plan': "${:,.2f}"
+            }), use_container_width=True, hide_index=True)
+
+            # Bar chart for monthly breakdown for the selected project
+            monthly_project_melted = monthly_breakdown_df.melt(id_vars=['Month'], var_name='Type', value_name='Amount')
+
+            fig_project_monthly = px.bar(
+                monthly_project_melted,
+                x='Month',
+                y='Amount',
+                color='Type',
+                barmode='group',
+                title=f'Monthly Financials for {selected_project_name}',
+                labels={'Amount': 'Amount ($)'}
+            )
+            st.plotly_chart(fig_project_monthly, use_container_width=True)
+
+    else:
+        st.warning("Please upload a CSV file with valid data to proceed.")
+
+else:
+    st.info("Upload your Capital Project CSV file to get started!")
+
