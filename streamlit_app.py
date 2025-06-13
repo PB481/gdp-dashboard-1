@@ -54,7 +54,7 @@ def load_data(uploaded_file):
         '2025_08_F', '2025_09_F', '2025_10_F', '2025_11_F', '2025_12_F',
         '2025_01_CP', '2025_02_CP', '2025_03_CP', '2025_04_CP', '2025_05_CP', '2025_06_CP', '2025_07_CP',
         '2025_08_CP', '2025_09_CP', '2025_10_CP', '2025_11_CP', '2025_12_CP',
-        # Check for cleaned duplicate versions of monthly columns
+        # Check for cleaned duplicate versions of monthly columns if they exist after cleaning
         '2025_01__A_1', '2025_02__A_1', '2025_03__A_1', '2025_04__A_1', '2025_05__A_1', '2025_06__A_1', '2025_07__A_1',
         '2025_08__A_1', '2025_09_A_1', '2025_10__A_1', '2025_11__A_1', '2025_12__A_1',
         '2025_01_F_1', '2025_02_F_1', '2025_03_F_1', '2025_04_F_1', '2025_05_F_1', '2025_06_F_1', '2025_07_F_1',
@@ -111,6 +111,7 @@ if uploaded_file is not None:
     if not df.empty:
         # --- Sidebar Filters ---
         st.sidebar.header("Filter Projects")
+        # Ensure column names are accessed using their clean format
         all_portfolio_levels = ['All'] + df['PORTFOLIO_OBS_LEVEL'].dropna().unique().tolist()
         selected_portfolio = st.sidebar.selectbox("Select Portfolio Level", all_portfolio_levels)
 
@@ -123,7 +124,7 @@ if uploaded_file is not None:
         all_brs_classifications = ['All'] + df['BRS_CLASSIFICATION'].dropna().unique().tolist()
         selected_brs_classification = st.sidebar.selectbox("Select BRS Classification", all_brs_classifications)
 
-        # Apply filters
+        # Apply filters - also ensuring clean column names are used
         filtered_df = df.copy()
         if selected_portfolio != 'All':
             filtered_df = filtered_df[filtered_df['PORTFOLIO_OBS_LEVEL'] == selected_portfolio]
@@ -426,11 +427,26 @@ if uploaded_file is not None:
                 </div>
 
                 <h2 class="section-title">Filtered Project Details</h2>
-                {project_details_table.to_html(classes='dataframe', index=False)}
+                {filtered_df[[
+                    'PORTFOLIO_OBS_LEVEL', 'SUB_PORTFOLIO_OBS_LEVEL', 'MASTER_PROJECT_ID',
+                    'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION',
+                    'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
+                    'TOTAL_2025_ACTUALS', 'TOTAL_2025_FORECASTS', 'TOTAL_2025_CAPITAL_PLAN',
+                    'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA'
+                ]].style.format({
+                    'BUSINESS_ALLOCATION': "${:,.2f}",
+                    'CURRENT_EAC': "${:,.2f}",
+                    'ALL_PRIOR_YEARS_ACTUALS': "${:,.2f}",
+                    'TOTAL_2025_ACTUALS': "${:,.2f}",
+                    'TOTAL_2025_FORECASTS': "${:,.2f}",
+                    'TOTAL_2025_CAPITAL_PLAN': "${:,.2f}",
+                    'QE_FORECAST_VS_QE_PLAN': "{:,.2f}",
+                    'FORECAST_VS_BA': "{:,.2f}"
+                }).to_html(index=False)}
 
                 <h2 class="section-title">2025 Monthly Spend Trends</h2>
                 <div class="chart-container">
-                    {fig_monthly_trends.to_html(full_html=False, include_plotlyjs='cdn')}
+                    {fig_monthly_trends.to_html(full_html=False, include_plotlyjs='cdn') if monthly_combined_df is not None and not monthly_combined_df.empty else ''}
                 </div>
 
                 <h2 class="section-title">Variance Analysis</h2>
@@ -502,24 +518,21 @@ if uploaded_file is not None:
 
         if st.button("Generate Report (HTML)"):
             # Prepare HTML components for the report
-            # Use `filtered_df` directly for `project_details_table` for consistency with display
-            project_details_table_html = filtered_df[[
+            # The project_details_table itself is already styled, just need to convert to HTML string
+            # from the .style object
+            # Access the underlying DataFrame for .to_html() and apply formatting within it
+            # Ensure the correct columns are selected for the report HTML table
+            project_details_df_for_report = filtered_df[[
                 'PORTFOLIO_OBS_LEVEL', 'SUB_PORTFOLIO_OBS_LEVEL', 'MASTER_PROJECT_ID',
                 'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION',
                 'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
                 'TOTAL_2025_ACTUALS', 'TOTAL_2025_FORECASTS', 'TOTAL_2025_CAPITAL_PLAN',
                 'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA'
-            ]].style.format({
-                'BUSINESS_ALLOCATION': "${:,.2f}",
-                'CURRENT_EAC': "${:,.2f}",
-                'ALL_PRIOR_YEARS_ACTUALS': "${:,.2f}",
-                'TOTAL_2025_ACTUALS': "${:,.2f}",
-                'TOTAL_2025_FORECASTS': "${:,.2f}",
-                'TOTAL_2025_CAPITAL_PLAN': "${:,.2f}",
-                'QE_FORECAST_VS_QE_PLAN': "{:,.2f}",
-                'FORECAST_VS_BA': "{:,.2f}"
-            })
-
+            ]]
+            
+            # The generate_html_report function now directly takes `filtered_df`
+            # and performs the styling and HTML conversion internally for the main table.
+            # So, we pass the df object here, not its .style object.
 
             report_content = generate_html_report(
                 filtered_df, total_business_allocation, total_current_eac, total_actuals_to_date, total_projects,
