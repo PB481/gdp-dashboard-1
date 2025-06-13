@@ -1,151 +1,204 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import plotly.express as px
+import io
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+def app():
+    st.set_page_config(layout="wide")
+    st.title("Excel Data Extractor and Visualizer")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+    st.write(
+        """
+        Upload your Excel file to extract specific data points and visualize the 2025
+        monthly data as time series graphs, along with other relevant charts.
+        """
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx"])
 
-    return gdp_df
+    if uploaded_file is not None:
+        try:
+            # Read the Excel file into a Pandas DataFrame
+            # Use io.BytesIO to handle the uploaded file
+            df = pd.read_excel(io.BytesIO(uploaded_file.getvalue()))
+            st.success("File successfully uploaded!")
 
-gdp_df = get_gdp_data()
+            # Standardized and consolidated list of columns
+            # Clean up column names in DataFrame by stripping whitespace and replacing problematic characters
+            df.columns = df.columns.str.strip().str.replace(' ', '_').str.replace('+', '_').str.upper()
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+            selected_columns = [
+                'PORTFOLIO_OBS_LEVEL1',
+                'SUB_PORTFOLIO_OBS_LEVEL',
+                'MASTER_PROJECT_ID',
+                'MASTER_PRJ_PROJ_NAME',
+                'PROJECT_NAME',
+                'PROJECT_MANAGER',
+                'BRS_CLASSIFICATION',
+                'INITIATIVE_PROGRAM',
+                'ALL_PRIOR_YEARS_A',
+                'BUSINESS_ALLOCATION',
+                'CURRENT_EAC',
+                'YE_RUN',
+                'RATE',
+                'QE_RUN',
+                'QE_FORECAST_VS_QE_PLAN',
+                'FORECAST_VS_BA',
+            ]
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+            # Generate 2025 monthly columns dynamically
+            month_suffixes = ['A', 'F', 'CP', 'AB']
+            for month in range(1, 13):
+                month_str = f"2025_{month:02d}"
+                for suffix in month_suffixes:
+                    selected_columns.append(f"{month_str}_{suffix}")
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+            # Check if all desired columns exist in the DataFrame
+            # Normalize the case and remove extra spaces from user-provided column names for matching
+            df_columns_normalized = [col.strip().replace(' ', '_').replace('+', '_').upper() for col in df.columns]
 
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+            # Filter selected_columns to only include those present in the DataFrame
+            # Map normalized selected_columns back to actual DataFrame column names if necessary,
+            # or just use the normalized ones for extraction if the DF columns are already normalized.
+            # For simplicity, we assume df.columns has been normalized.
+            existing_selected_columns = [col for col in selected_columns if col in df.columns]
+            missing_columns = [col for col in selected_columns if col not in df.columns]
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+            if missing_columns:
+                st.warning(
+                    f"The following columns were not found in your Excel file with the exact names: {', '.join(missing_columns)}. "
+                    "Please ensure the column headers in your file exactly match the expected names or adjust the script."
+                )
 
-st.header(f'GDP in {to_year}', divider='gray')
+            if not existing_selected_columns:
+                st.error("No matching columns found in the uploaded file based on the required headers. Please check your Excel file's headers.")
+                return
 
-''
+            # Extract the desired data
+            extracted_df = df[existing_selected_columns].copy()
 
-cols = st.columns(4)
+            st.header("Extracted Data (First 5 Rows)")
+            st.dataframe(extracted_df.head())
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+            # --- Time Series Graphs for 2025 Data ---
+            st.header("2025 Monthly Data Time Series")
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+            time_series_cols = [col for col in existing_selected_columns if col.startswith('2025_')]
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            if time_series_cols:
+                # Prepare data for time series plotting
+                melted_df_list = []
+                for col in time_series_cols:
+                    if '_' in col:
+                        parts = col.split('_')
+                        if len(parts) >= 3:
+                            month = parts[1]
+                            data_type = parts[2]
+                            temp_df = extracted_df[[col]].copy()
+                            temp_df.columns = ['Value']
+                            temp_df['Month'] = int(month)
+                            temp_df['Type'] = data_type
+                            melted_df_list.append(temp_df)
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+                if melted_df_list:
+                    melted_df = pd.concat(melted_df_list)
+                    # Drop rows where 'Value' might be non-numeric and coerce to numeric
+                    melted_df['Value'] = pd.to_numeric(melted_df['Value'], errors='coerce')
+                    melted_df.dropna(subset=['Value'], inplace=True)
+
+                    if not melted_df.empty:
+                        # Group by Month and Type to get the average or sum for plotting
+                        agg_melted_df = melted_df.groupby(['Month', 'Type']).agg(
+                            Mean_Value=('Value', 'mean'),
+                            Sum_Value=('Value', 'sum')
+                        ).reset_index()
+
+                        st.subheader("Monthly Mean Values (by Type)")
+                        fig_mean = px.line(agg_melted_df, x='Month', y='Mean_Value', color='Type',
+                                         title='Average Monthly Values by Type (2025)',
+                                         labels={'Mean_Value': 'Average Value', 'Month': 'Month (2025)'})
+                        # Set month names for x-axis ticks
+                        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                        fig_mean.update_xaxes(tickmode='array', tickvals=list(range(1, 13)), ticktext=month_names)
+                        st.plotly_chart(fig_mean, use_container_width=True)
+
+                        st.subheader("Monthly Sum Values (by Type)")
+                        fig_sum = px.line(agg_melted_df, x='Month', y='Sum_Value', color='Type',
+                                        title='Sum of Monthly Values by Type (2025)',
+                                        labels={'Sum_Value': 'Sum of Values', 'Month': 'Month (2025)'})
+                        fig_sum.update_xaxes(tickmode='array', tickvals=list(range(1, 13)), ticktext=month_names)
+                        st.plotly_chart(fig_sum, use_container_width=True)
+                    else:
+                        st.info("No numerical 2025 monthly data available after cleaning for plotting time series.")
+                else:
+                    st.info("No 2025 monthly data found in the selected columns for plotting.")
+            else:
+                st.info("No 2025 monthly columns found for time series analysis in the extracted data.")
+
+
+            # --- Other Graphs ---
+            st.header("Other Data Visualizations")
+
+            # Example 1: Bar chart for 'PROJECT_MANAGER'
+            if 'PROJECT_MANAGER' in extracted_df.columns:
+                st.subheader("Projects per Project Manager")
+                pm_counts = extracted_df['PROJECT_MANAGER'].value_counts().reset_index()
+                pm_counts.columns = ['PROJECT_MANAGER', 'Count']
+                fig_pm = px.bar(pm_counts, x='PROJECT_MANAGER', y='Count',
+                                title='Number of Projects per Project Manager')
+                st.plotly_chart(fig_pm, use_container_width=True)
+            else:
+                st.info("Column 'PROJECT_MANAGER' not found for visualization.")
+
+            # Example 2: Bar chart for 'BUSINESS_ALLOCATION'
+            if 'BUSINESS_ALLOCATION' in extracted_df.columns:
+                st.subheader("Business Allocation Distribution")
+                biz_alloc_counts = extracted_df['BUSINESS_ALLOCATION'].value_counts().reset_index()
+                biz_alloc_counts.columns = ['BUSINESS_ALLOCATION', 'Count']
+                fig_biz = px.bar(biz_alloc_counts, x='BUSINESS_ALLOCATION', y='Count',
+                                 title='Distribution of Business Allocation')
+                st.plotly_chart(fig_biz, use_container_width=True)
+            else:
+                st.info("Column 'BUSINESS_ALLOCATION' not found for visualization.")
+
+            # Example 3: Histogram for 'CURRENT_EAC' (assuming numerical)
+            if 'CURRENT_EAC' in extracted_df.columns:
+                st.subheader("Distribution of Current EAC")
+                # Ensure it's numeric, coerce errors to NaN and drop NaNs
+                numeric_eac = pd.to_numeric(extracted_df['CURRENT_EAC'], errors='coerce').dropna()
+                if not numeric_eac.empty:
+                    fig_eac = px.histogram(numeric_eac, x='CURRENT_EAC',
+                                           title='Distribution of Current EAC Values')
+                    st.plotly_chart(fig_eac, use_container_width=True)
+                else:
+                    st.info("Column 'CURRENT_EAC' found but contains no numerical data for histogram.")
+            else:
+                st.info("Column 'CURRENT_EAC' not found for visualization.")
+
+
+            # Example 4: Scatter plot for ALL_PRIOR_YEARS_A vs CURRENT_EAC
+            relevant_cols = ['ALL_PRIOR_YEARS_A', 'CURRENT_EAC']
+            if all(col in extracted_df.columns for col in relevant_cols):
+                st.subheader("ALL_PRIOR_YEARS_A vs CURRENT_EAC")
+                scatter_df = extracted_df[relevant_cols].copy()
+                scatter_df['ALL_PRIOR_YEARS_A'] = pd.to_numeric(scatter_df['ALL_PRIOR_YEARS_A'], errors='coerce')
+                scatter_df['CURRENT_EAC'] = pd.to_numeric(scatter_df['CURRENT_EAC'], errors='coerce')
+                scatter_df.dropna(inplace=True)
+
+                if not scatter_df.empty:
+                    fig_scatter = px.scatter(scatter_df, x='ALL_PRIOR_YEARS_A', y='CURRENT_EAC',
+                                             title='Prior Years Actuals vs Current EAC')
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+                else:
+                    st.info("No numerical data available for 'ALL_PRIOR_YEARS_A' and 'CURRENT_EAC' for scatter plot.")
+            else:
+                st.info("Columns 'ALL_PRIOR_YEARS_A' or 'CURRENT_EAC' not found for scatter plot.")
+
+
+        except Exception as e:
+            st.error(f"An error occurred: {e}. Please ensure the file is a valid Excel file and its contents are as expected.")
+
+if __name__ == "__main__":
+    app()
