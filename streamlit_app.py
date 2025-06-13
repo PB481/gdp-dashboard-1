@@ -20,11 +20,41 @@ def app():
         try:
             # Read the Excel file into a Pandas DataFrame
             # Use io.BytesIO to handle the uploaded file
-            df = pd.read_excel(io.BytesIO(uploaded_file.getvalue()))
-            st.success("File successfully uploaded!")
+            # The key change is how we read the Excel file to allow for duplicate headers initially
+            # We'll then clean them up *after* loading.
+            df = pd.read_excel(io.BytesIO(uploaded_file.getvalue()), header=None) # Read without a header first
 
-            # Standardized and consolidated list of columns
+            # Now, find the actual header row. Assuming the first row with non-empty values
+            # and typical column names is the header. This might require some tuning.
+            # A more robust approach might be to ask the user for the header row number.
+            # For now, let's try to infer it.
+
+            # Find the first row that looks like a header (e.g., has string values)
+            header_row_index = -1
+            for i in range(df.shape[0]):
+                if any(isinstance(x, str) and len(str(x).strip()) > 0 for x in df.iloc[i]):
+                    header_row_index = i
+                    break
+
+            if header_row_index == -1:
+                st.error("Could not find a header row in your Excel file. Please ensure your data starts with a header.")
+                return
+
+            # Set the found row as the header
+            df.columns = df.iloc[header_row_index]
+            df = df[header_row_index+1:].reset_index(drop=True) # Data starts from the next row
+
+            # Handle duplicate column names by making them unique BEFORE normalization
+            cols = pd.Series(df.columns)
+            for dup in cols[cols.duplicated()].unique():
+                cols[cols[cols == dup].index.values.tolist()] = [dup + '.' + str(i) if i != 0 else dup for i, iel in enumerate(cols[cols == dup].index.values.tolist())]
+            df.columns = cols
+
+            st.success("File successfully uploaded and columns processed!")
+
+
             # Clean up column names in DataFrame by stripping whitespace and replacing problematic characters
+            # Apply normalization AFTER making duplicates unique
             df.columns = df.columns.str.strip().str.replace(' ', '_').str.replace('+', '_').str.upper()
 
             selected_columns = [
@@ -40,9 +70,9 @@ def app():
                 'BUSINESS_ALLOCATION',
                 'CURRENT_EAC',
                 'YE_RUN',
-                'RATE',
+                'RATE', # This will likely be 'RATE.1', 'RATE.2' etc. in your DataFrame
                 'QE_RUN',
-                'QE_FORECAST_VS_QE_PLAN',
+                'QE_FORECAST_VS_QE_PLAN', # This will likely be 'QE_FORECAST_VS_QE_PLAN.1' etc.
                 'FORECAST_VS_BA',
             ]
 
@@ -52,24 +82,22 @@ def app():
                 month_str = f"2025_{month:02d}"
                 for suffix in month_suffixes:
                     selected_columns.append(f"{month_str}_{suffix}")
+                    # Also add potential Pandas auto-generated duplicates
+                    for i in range(1, 5): # Check for up to 4 duplicates (e.g., .1, .2, .3, .4)
+                        selected_columns.append(f"{month_str}_{suffix}.{i}")
 
-            # Check if all desired columns exist in the DataFrame
-            # Normalize the case and remove extra spaces from user-provided column names for matching
-            df_columns_normalized = [col.strip().replace(' ', '_').replace('+', '_').upper() for col in df.columns]
 
             # Filter selected_columns to only include those present in the DataFrame
-            # Map normalized selected_columns back to actual DataFrame column names if necessary,
-            # or just use the normalized ones for extraction if the DF columns are already normalized.
-            # For simplicity, we assume df.columns has been normalized.
             existing_selected_columns = [col for col in selected_columns if col in df.columns]
             missing_columns = [col for col in selected_columns if col not in df.columns]
 
-
             if missing_columns:
                 st.warning(
-                    f"The following columns were not found in your Excel file with the exact names: {', '.join(missing_columns)}. "
-                    "Please ensure the column headers in your file exactly match the expected names or adjust the script."
+                    f"The following *original* column names were not found in your Excel file with the exact names or their auto-generated unique forms: {', '.join(set([c.split('.')[0] for c in missing_columns if not c.startswith('2025_')]))}. "
+                    "Please ensure the column headers in your file match the expected names or adjust the script."
                 )
+                st.info("Note: Columns that were duplicated in your Excel file might have `.1`, `.2`, etc. appended by Pandas. This script will try to account for them.")
+
 
             if not existing_selected_columns:
                 st.error("No matching columns found in the uploaded file based on the required headers. Please check your Excel file's headers.")
@@ -84,43 +112,41 @@ def app():
             # --- Time Series Graphs for 2025 Data ---
             st.header("2025 Monthly Data Time Series")
 
-            time_series_cols = [col for col in existing_selected_columns if col.startswith('2025_')]
+            # Filter time_series_cols specifically from the EXISTING_SELECTED_COLUMNS
+            time_series_cols_present = [col for col in existing_selected_columns if col.startswith('2025_')]
 
-            if time_series_cols:
-                # Prepare data for time series plotting
+            if time_series_cols_present:
                 melted_df_list = []
-                for col in time_series_cols:
-                    if '_' in col:
-                        parts = col.split('_')
-                        if len(parts) >= 3:
-                            month = parts[1]
-                            data_type = parts[2]
+                for col in time_series_cols_present:
+                    parts = col.split('_')
+                    if len(parts) >= 3:
+                        month_part = parts[1]
+                        type_part = parts[2].split('.')[0] # Remove .1, .2 etc. from type
+                        if month_part.isdigit():
+                            month = int(month_part)
                             temp_df = extracted_df[[col]].copy()
                             temp_df.columns = ['Value']
-                            temp_df['Month'] = int(month)
-                            temp_df['Type'] = data_type
+                            temp_df['Month'] = month
+                            temp_df['Type'] = type_part
                             melted_df_list.append(temp_df)
 
                 if melted_df_list:
                     melted_df = pd.concat(melted_df_list)
-                    # Drop rows where 'Value' might be non-numeric and coerce to numeric
                     melted_df['Value'] = pd.to_numeric(melted_df['Value'], errors='coerce')
                     melted_df.dropna(subset=['Value'], inplace=True)
 
                     if not melted_df.empty:
-                        # Group by Month and Type to get the average or sum for plotting
                         agg_melted_df = melted_df.groupby(['Month', 'Type']).agg(
                             Mean_Value=('Value', 'mean'),
                             Sum_Value=('Value', 'sum')
                         ).reset_index()
 
                         st.subheader("Monthly Mean Values (by Type)")
+                        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
                         fig_mean = px.line(agg_melted_df, x='Month', y='Mean_Value', color='Type',
                                          title='Average Monthly Values by Type (2025)',
                                          labels={'Mean_Value': 'Average Value', 'Month': 'Month (2025)'})
-                        # Set month names for x-axis ticks
-                        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
                         fig_mean.update_xaxes(tickmode='array', tickvals=list(range(1, 13)), ticktext=month_names)
                         st.plotly_chart(fig_mean, use_container_width=True)
 
@@ -166,7 +192,6 @@ def app():
             # Example 3: Histogram for 'CURRENT_EAC' (assuming numerical)
             if 'CURRENT_EAC' in extracted_df.columns:
                 st.subheader("Distribution of Current EAC")
-                # Ensure it's numeric, coerce errors to NaN and drop NaNs
                 numeric_eac = pd.to_numeric(extracted_df['CURRENT_EAC'], errors='coerce').dropna()
                 if not numeric_eac.empty:
                     fig_eac = px.histogram(numeric_eac, x='CURRENT_EAC',
